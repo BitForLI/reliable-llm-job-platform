@@ -1,6 +1,6 @@
 # Reliable LLM Job Platform on AWS
 
-An asynchronous LLM platform for requests that may take time or fail. The API returns a job ID immediately; the AWS mode persists job state and handles retries without processing a completed job twice.
+An asynchronous LLM platform for requests that may take time or fail. The API returns a job ID immediately; the AWS mode persists job state and skips redelivered jobs already marked complete.
 
 ## Product at a glance
 
