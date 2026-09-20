@@ -1,6 +1,6 @@
 # Reliable LLM Job Platform on AWS
 
-An asynchronous LLM platform for requests that may take time, fail, or need to be retried without losing the job or processing it twice.
+An asynchronous LLM platform for requests that may take time or fail. The API returns a job ID immediately; the AWS mode persists job state and handles retries without processing a completed job twice.
 
 ## Product at a glance
 
@@ -9,12 +9,20 @@ An asynchronous LLM platform for requests that may take time, fail, or need to b
 | **Users** | Application teams that need to submit and track long-running LLM work |
 | **Problem** | A synchronous model call is not enough when jobs must survive retries, deployments, and provider failures |
 | **Core experience** | Submit a job, receive an ID immediately, and check its durable status later |
-| **Local mode** | Deterministic provider for development, tests, and evaluation without model charges |
-| **AWS mode** | FastAPI, SQS, DynamoDB, Bedrock, ECS Fargate, Terraform, and CloudWatch |
+| **Local mode** | Deterministic provider and in-memory jobs for development and tests; jobs do not survive a restart |
+| **AWS mode** | Durable job state in DynamoDB, work distribution through SQS, and Bedrock inference on ECS Fargate |
 
 The repository shows the engineering around the model call: durable processing, repeatable evaluation, infrastructure as code, deployment gates, observability, privacy boundaries, and rollback paths.
 
 The project runs with a deterministic local provider by default, so its behaviour can be tested without AWS credentials or model calls.
+
+## What a client does
+
+1. Submit a prompt to `POST /v1/jobs` and receive HTTP 202 with a `job_id`.
+2. Poll `GET /v1/jobs/{job_id}` for `pending`, `running`, `succeeded`, or `failed` status.
+3. Read the output or a bounded error code from the final job record.
+
+The same API works in both modes. Local in-memory jobs are a demonstration path; SQS and DynamoDB provide the durable path when AWS mode is configured.
 
 ## Architecture
 
