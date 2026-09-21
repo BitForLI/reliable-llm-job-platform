@@ -1,21 +1,25 @@
 import time
-from datetime import datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request, status
-from fastapi.responses import JSONResponse
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from pydantic import BaseModel, Field
 
 from app.auth import require_api_key
 from app.config import Settings, get_settings
+from app.error_handlers import register_error_handlers
 from app.job_service import JobService, get_job_service
 from app.logging import configure_logging
 from app.metrics import Metrics, MetricsSnapshot, get_metrics
 from app.middleware import request_context_middleware
-from app.providers.base import LLMProvider, LLMProviderError
-from app.providers.bedrock import BedrockResponseError
+from app.providers.base import LLMProvider
 from app.providers.factory import get_provider
+from app.schemas import (
+    CreateJobRequest,
+    ErrorResponse,
+    GenerateRequest,
+    GenerateResponse,
+    JobResponse,
+)
 from services.common.observability.emf import (
     configure_emf_logging,
     emit_inference_metrics,
@@ -24,13 +28,6 @@ from services.common.observability.tracing import (
     configure_tracing,
     inference_span,
     mark_current_span_error,
-)
-from services.worker.app.aws_jobs import DurableJobStoreError
-from services.worker.app.jobs import (
-    JobCapacityError,
-    JobNotFoundError,
-    JobRecord,
-    JobStatus,
 )
 
 settings = get_settings()
@@ -50,168 +47,7 @@ if tracer_provider is not None:
         tracer_provider=tracer_provider,
         excluded_urls=".*/health,.*/ready",
     )
-
-
-class GenerateRequest(BaseModel):
-    prompt: str = Field(min_length=1, max_length=8000)
-
-
-class GenerateResponse(BaseModel):
-    output: str
-    model: str
-    latency_ms: int
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    estimated_cost: float | None = None
-
-
-class CreateJobRequest(BaseModel):
-    prompt: str = Field(min_length=1, max_length=8000)
-
-
-class JobResponse(BaseModel):
-    job_id: str
-    status: JobStatus
-    created_at: datetime
-    updated_at: datetime
-    output: str | None = None
-    model: str | None = None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    estimated_cost: float | None = None
-    error_code: str | None = None
-
-    @classmethod
-    def from_record(cls, record: JobRecord) -> "JobResponse":
-        return cls(
-            job_id=record.job_id,
-            status=record.status,
-            created_at=record.created_at,
-            updated_at=record.updated_at,
-            output=record.output,
-            model=record.model_id,
-            input_tokens=record.input_tokens,
-            output_tokens=record.output_tokens,
-            estimated_cost=record.estimated_cost,
-            error_code=record.error_code,
-        )
-
-
-class ErrorDetail(BaseModel):
-    code: str
-    message: str
-    request_id: str | None
-
-
-class ErrorResponse(BaseModel):
-    error: ErrorDetail
-
-
-def _provider_error_response(
-    request: Request,
-    exc: LLMProviderError,
-    status_code: int,
-    code: str,
-    message: str,
-    headers: dict[str, str] | None = None,
-) -> JSONResponse:
-    request.state.error_type = type(exc).__name__
-    return JSONResponse(
-        status_code=status_code,
-        headers=headers,
-        content={
-            "error": {
-                "code": code,
-                "message": message,
-                "request_id": getattr(request.state, "request_id", None),
-            }
-        },
-    )
-
-
-@app.exception_handler(BedrockResponseError)
-async def handle_provider_response_error(
-    request: Request,
-    exc: BedrockResponseError,
-) -> JSONResponse:
-    return _provider_error_response(
-        request=request,
-        exc=exc,
-        status_code=502,
-        code="invalid_model_response",
-        message="The model service returned an invalid response.",
-    )
-
-
-@app.exception_handler(LLMProviderError)
-async def handle_provider_error(
-    request: Request,
-    exc: LLMProviderError,
-) -> JSONResponse:
-    return _provider_error_response(
-        request=request,
-        exc=exc,
-        status_code=503,
-        code="llm_provider_unavailable",
-        message="The model service is temporarily unavailable.",
-        headers={"Retry-After": "5"},
-    )
-
-
-@app.exception_handler(JobNotFoundError)
-async def handle_job_not_found(
-    request: Request,
-    exc: JobNotFoundError,
-) -> JSONResponse:
-    request.state.error_type = type(exc).__name__
-    return JSONResponse(
-        status_code=404,
-        content={
-            "error": {
-                "code": "job_not_found",
-                "message": "The requested job does not exist.",
-                "request_id": getattr(request.state, "request_id", None),
-            }
-        },
-    )
-
-
-@app.exception_handler(JobCapacityError)
-async def handle_job_capacity(
-    request: Request,
-    exc: JobCapacityError,
-) -> JSONResponse:
-    request.state.error_type = type(exc).__name__
-    return JSONResponse(
-        status_code=503,
-        headers={"Retry-After": "1"},
-        content={
-            "error": {
-                "code": "job_capacity_exceeded",
-                "message": "The job service is temporarily at capacity.",
-                "request_id": getattr(request.state, "request_id", None),
-            }
-        },
-    )
-
-
-@app.exception_handler(DurableJobStoreError)
-async def handle_job_store_error(
-    request: Request,
-    exc: DurableJobStoreError,
-) -> JSONResponse:
-    request.state.error_type = type(exc).__name__
-    return JSONResponse(
-        status_code=503,
-        headers={"Retry-After": "5"},
-        content={
-            "error": {
-                "code": "job_service_unavailable",
-                "message": "The durable job service is temporarily unavailable.",
-                "request_id": getattr(request.state, "request_id", None),
-            }
-        },
-    )
+register_error_handlers(app)
 
 
 @app.get("/health")
